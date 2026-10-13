@@ -16,7 +16,8 @@ file_handler.setFormatter(formatter)
 log.addHandler(file_handler)
 log.addHandler(logging.StreamHandler())
 
-VERIFY_SSL = False
+VERIFY_SSL = True
+TIMEOUT = 60
 
 INSTRUCTIONS = """
 Search for JUNOS Platform and Model Features by JUNOS release.
@@ -28,7 +29,7 @@ Typical usage would include:
     - Identifying whether a particular feature is supported on a given model/release combination.
 """
 
-mcp = FastMCP(name="Juniper JUNOS Command Line Interface Explorer", instructions=INSTRUCTIONS)
+mcp = FastMCP(name="Juniper Feature Explorer", instructions=INSTRUCTIONS)
 
 BASE_URL = "https://apps.juniper.net"
 
@@ -131,7 +132,7 @@ def _build_platform_catalog():
                 params={"typ": "1", "category": cat_param},
                 headers=HEADERS,
                 timeout=15,
-                verify=False,
+                verify=VERIFY_SSL,
             )
             r.raise_for_status()
             html = r.text
@@ -186,7 +187,9 @@ def software_releases(
       junos_os_type: str - one of "Junos OS" or "Junos OS Evolved"
     """
     payload = {"software": junos_os_type}
-    response = requests.post(_url_for("software_releases"), json=payload, verify=VERIFY_SSL)
+    response = requests.post(
+        _url_for("software_releases"), json=payload, verify=VERIFY_SSL, timeout=TIMEOUT
+    )
     if response.ok and len(response.content):
         return FeatureExplorerResponse(success=True, response=response.json())
     return FeatureExplorerResponse(success=False, error=response.text or "Empty response from API.")
@@ -206,7 +209,7 @@ def models_compatible_with_release(
     if junos_os_type not in ["Junos OS", "Junos OS Evolved"]:
         raise ValueError("junos_os_type must be one of ['Junos OS', 'Junos OS Evolved']")
     url = _url_for("models_for_release").format(junos_os_type=junos_os_type, version=junos_version)
-    response = requests.get(url, verify=VERIFY_SSL)
+    response = requests.get(url, verify=VERIFY_SSL, timeout=TIMEOUT)
     if response.ok and len(response.content):
         return FeatureExplorerResponse(success=True, response=response.json())
     return FeatureExplorerResponse(success=False, error=response.text or "Empty response from API.")
@@ -219,7 +222,7 @@ def releases_compatible_with_model(
     """Fetch the releases compatible with the given model."""
     product_key = _get_pid_for_model(model)
     url = _url_for("releases_for_model").format(product_key=product_key)
-    response = requests.get(url, verify=VERIFY_SSL)
+    response = requests.get(url, verify=VERIFY_SSL, timeout=TIMEOUT)
     if response.ok and len(response.content):
         return FeatureExplorerResponse(success=True, response=response.json())
     return FeatureExplorerResponse(success=False, error=response.text or "Empty response from API.")
@@ -233,7 +236,9 @@ def features_for_model_on_junos_version(
 ) -> FeatureExplorerResponse:
     """Fetch the features for a given model on a specific release."""
     payload = {"software": junos_os_type, "release": junos_version, "platform": model}
-    response = requests.post(_url_for("features_for_model"), json=payload, verify=VERIFY_SSL)
+    response = requests.post(
+        _url_for("features_for_model"), json=payload, verify=VERIFY_SSL, timeout=TIMEOUT
+    )
     if response.ok and len(response.content):
         return FeatureExplorerResponse(success=True, response=response.json())
     return FeatureExplorerResponse(success=False, error=response.text or "Empty response from API.")
@@ -242,7 +247,7 @@ def features_for_model_on_junos_version(
 @mcp.tool
 def feature_tree() -> FeatureExplorerResponse:
     """Fetch the feature tree, including all features and their keys."""
-    response = requests.get(_url_for("feature_tree"), verify=VERIFY_SSL)
+    response = requests.get(_url_for("feature_tree"), verify=VERIFY_SSL, timeout=TIMEOUT)
     if response.ok and len(response.content):
         return FeatureExplorerResponse(success=True, response=response.json())
     return FeatureExplorerResponse(success=False, error=response.text or "Empty response from API.")
@@ -256,7 +261,7 @@ def feature_details(
 ) -> FeatureExplorerResponse:
     """Fetch the details of a specific feature."""
     url = _url_for("feature_details").format(feature_key=feature_key)
-    response = requests.get(url, verify=VERIFY_SSL)
+    response = requests.get(url, verify=VERIFY_SSL, timeout=TIMEOUT)
     if response.ok and len(response.content):
         return FeatureExplorerResponse(success=True, response=response.json())
     return FeatureExplorerResponse(success=False, error=response.text or "Empty response from API.")

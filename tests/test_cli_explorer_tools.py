@@ -6,7 +6,8 @@ import requests
 from fastmcp import Client
 from fastmcp.exceptions import ToolError
 
-import jnpr_pathfinder_mcp
+from jnpr_pathfinder_mcp import helpers
+from jnpr_pathfinder_mcp.server import cli_explorer
 from jnpr_pathfinder_mcp.server.cli_explorer import mcp
 
 
@@ -15,124 +16,168 @@ class ResponseMock:
         self.content = self.text = content
         self.ok = ok
 
-    def ok(self):
-        return self.ok
-
     def json(self):
         return json.loads(self.content)
 
 
+def envelope(data, success=True, message="ok"):
+    return json.dumps(
+        {"status": {"code": 200, "success": success, "errorMessage": message}, "data": data}
+    )
+
+
+TOPICS = [
+    {"topicTitle": "show bgp neighbor (EX Series)", "topicType": "command"},
+    {"topicTitle": "neighbor", "topicType": "statement"},
+    {"topicTitle": "show bgp neighbor", "topicType": "command"},
+    {"topicTitle": "show bgp neighbor exact-instance", "topicType": "command"},
+    {"topicTitle": "show route", "topicType": "command"},
+    {"topicTitle": None},
+]
+
+
+@pytest.fixture(autouse=True)
+def clear_topic_cache():
+    cli_explorer._topic_cache.clear()
+    yield
+    cli_explorer._topic_cache.clear()
+
+
+TOOL_CALLS = [
+    ("topic_reference", {}),
+    ("topic_hierarchy", {}),
+    ("topic_info", {"topic_title": "show bgp neighbor"}),
+    ("search", {"query": "show bgp neighbor", "page_size": 10}),
+]
+
+
 @pytest.mark.asyncio
-async def test_topic_reference():
-    """Test content and structure of workspace info command."""
+@pytest.mark.parametrize("tool,args", TOOL_CALLS)
+async def test_tool_live(tool, args):
     async with Client(mcp) as client:
-        result = await client.call_tool("topic_reference")
-        assert result.structured_content.get("success")
+        result = await client.call_tool(tool, args)
+        assert result.structured_content.get("success"), result.structured_content
         assert result.structured_content.get("response")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("tool,args", TOOL_CALLS)
+async def test_tool_request_error_raises(tool, args):
+    async with Client(mcp) as client:
         with mock.patch.object(
-            jnpr_pathfinder_mcp.server.cli_explorer.requests,
-            "get",
-            side_effect=requests.exceptions.RequestException,
+            helpers.requests, "post", side_effect=requests.exceptions.RequestException
         ):
             with pytest.raises(ToolError):
-                await client.call_tool("topic_reference")
+                await client.call_tool(tool, args)
 
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("tool,args", TOOL_CALLS)
+async def test_tool_request_not_ok(tool, args):
+    async with Client(mcp) as client:
         with mock.patch.object(
-            jnpr_pathfinder_mcp.server.cli_explorer.requests,
-            "get",
-            return_value=ResponseMock(False, "Failed."),
+            helpers.requests, "post", return_value=ResponseMock(False, "Failed.")
         ):
-            result = await client.call_tool("topic_reference")
+            result = await client.call_tool(tool, args)
             assert not result.structured_content.get("success")
-            assert result.structured_content.get("error")
+            assert result.structured_content.get("error") == "Failed."
             assert not result.structured_content.get("response")
 
-        with mock.patch.object(
-            jnpr_pathfinder_mcp.server.cli_explorer.requests,
-            "get",
-            return_value=ResponseMock(True, ""),
-        ):
-            result = await client.call_tool("topic_reference")
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("tool,args", TOOL_CALLS)
+async def test_tool_request_empty_response(tool, args):
+    async with Client(mcp) as client:
+        with mock.patch.object(helpers.requests, "post", return_value=ResponseMock(True, "")):
+            result = await client.call_tool(tool, args)
             assert not result.structured_content.get("success")
-            assert result.structured_content.get("error")
             assert "Empty response from API" in result.structured_content.get("error")
 
 
 @pytest.mark.asyncio
-async def test_topic_hierarchy():
-    """Test content and structure of workspace info command."""
+@pytest.mark.parametrize("tool,args", TOOL_CALLS)
+async def test_tool_api_reports_failure(tool, args):
     async with Client(mcp) as client:
-        result = await client.call_tool("topic_hierarchy")
-        assert result.structured_content.get("success")
-        assert result.structured_content.get("response")
-
         with mock.patch.object(
-            jnpr_pathfinder_mcp.server.cli_explorer.requests,
+            helpers.requests,
             "post",
-            side_effect=requests.exceptions.RequestException,
+            return_value=ResponseMock(True, envelope(None, False, "Not found.")),
         ):
-            with pytest.raises(ToolError):
-                await client.call_tool("topic_hierarchy")
-
-        with mock.patch.object(
-            jnpr_pathfinder_mcp.server.cli_explorer.requests,
-            "post",
-            return_value=ResponseMock(False, "Failed."),
-        ):
-            result = await client.call_tool("topic_hierarchy")
+            result = await client.call_tool(tool, args)
             assert not result.structured_content.get("success")
-            assert result.structured_content.get("error")
-            assert not result.structured_content.get("response")
-        with mock.patch.object(
-            jnpr_pathfinder_mcp.server.cli_explorer.requests,
-            "post",
-            return_value=ResponseMock(True, ""),
-        ):
-            result = await client.call_tool("topic_hierarchy")
-            assert not result.structured_content.get("success")
-            assert result.structured_content.get("error")
-            assert "Empty response from API" in result.structured_content.get("error")
+            assert result.structured_content.get("error") == "Not found."
 
 
 @pytest.mark.asyncio
-async def test_topic_search():
-    """Test content and structure of workspace info command."""
+async def test_topic_info_unknown_topic():
     async with Client(mcp) as client:
-        result = await client.call_tool(
-            "search", {"query": "bgp peers", "page_number": 0, "page_size": 10}
-        )
-        assert result.structured_content.get("success")
-        assert result.structured_content.get("response")
+        result = await client.call_tool("topic_info", {"topic_title": "not a real topic xyz"})
+        assert not result.structured_content.get("success")
+        assert result.structured_content.get("error")
 
-        with mock.patch.object(
-            jnpr_pathfinder_mcp.server.cli_explorer.requests,
-            "post",
-            side_effect=requests.exceptions.RequestException,
-        ):
-            with pytest.raises(ToolError):
-                await client.call_tool(
-                    "search", {"query": "bgp peers", "page_number": 0, "page_size": 10}
-                )
 
-        with mock.patch.object(
-            jnpr_pathfinder_mcp.server.cli_explorer.requests,
-            "post",
-            return_value=ResponseMock(False, "Failed."),
-        ):
-            result = await client.call_tool(
-                "search", {"query": "bgp peers", "page_number": 0, "page_size": 10}
+@pytest.mark.asyncio
+async def test_search_ranks_filters_and_caches():
+    response = ResponseMock(True, envelope({"cliTopicList": TOPICS}))
+    async with Client(mcp) as client:
+        with mock.patch.object(helpers.requests, "post", return_value=response) as post:
+            result = await client.call_tool("search", {"query": "  Show BGP  neighbor "})
+            again = await client.call_tool("search", {"query": "show route"})
+    assert post.call_count == 1
+    titles = [t["topicTitle"] for t in result.structured_content["response"]["results"]]
+    assert titles == [
+        "show bgp neighbor",
+        "show bgp neighbor (EX Series)",
+        "show bgp neighbor exact-instance",
+    ]
+    assert result.structured_content["response"]["totalRecords"] == 3
+    assert [t["topicTitle"] for t in again.structured_content["response"]["results"]] == [
+        "show route"
+    ]
+
+
+@pytest.mark.asyncio
+async def test_search_ranks_substring_matches_after_prefix_matches():
+    topics = [{"topicTitle": "bgp neighbor x"}, {"topicTitle": "x bgp neighbor"}]
+    response = ResponseMock(True, envelope({"cliTopicList": topics}))
+    async with Client(mcp) as client:
+        with mock.patch.object(helpers.requests, "post", return_value=response):
+            result = await client.call_tool("search", {"query": "neighbor bgp"})
+            ordered = await client.call_tool("search", {"query": "bgp neighbor"})
+    assert result.structured_content["response"]["totalRecords"] == 2
+    assert [t["topicTitle"] for t in ordered.structured_content["response"]["results"]] == [
+        "bgp neighbor x",
+        "x bgp neighbor",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_search_pagination():
+    response = ResponseMock(True, envelope({"cliTopicList": TOPICS}))
+    async with Client(mcp) as client:
+        with mock.patch.object(helpers.requests, "post", return_value=response):
+            page2 = await client.call_tool(
+                "search", {"query": "neighbor", "page_number": 2, "page_size": 2}
             )
-            assert not result.structured_content.get("success")
-            assert result.structured_content.get("error")
-            assert not result.structured_content.get("response")
-        with mock.patch.object(
-            jnpr_pathfinder_mcp.server.cli_explorer.requests,
-            "post",
-            return_value=ResponseMock(True, ""),
-        ):
-            result = await client.call_tool(
-                "search", {"query": "bgp peers", "page_number": 0, "page_size": 10}
+            page0 = await client.call_tool(
+                "search", {"query": "neighbor", "page_number": 0, "page_size": 0}
             )
-            assert not result.structured_content.get("success")
-            assert result.structured_content.get("error")
-            assert "Empty response from API" in result.structured_content.get("error")
+    assert [t["topicTitle"] for t in page2.structured_content["response"]["results"]] == [
+        "show bgp neighbor (EX Series)",
+        "show bgp neighbor exact-instance",
+    ]
+    assert page0.structured_content["response"]["pageNumber"] == 1
+    assert page0.structured_content["response"]["pageSize"] == 1
+    assert [t["topicTitle"] for t in page0.structured_content["response"]["results"]] == [
+        "neighbor"
+    ]
+
+
+@pytest.mark.asyncio
+async def test_search_unexpected_reference_shape():
+    response = ResponseMock(True, envelope([{"topicTitle": "show bgp"}]))
+    async with Client(mcp) as client:
+        with mock.patch.object(helpers.requests, "post", return_value=response):
+            result = await client.call_tool("search", {"query": "bgp"})
+    assert result.structured_content["success"]
+    assert result.structured_content["response"]["totalRecords"] == 0

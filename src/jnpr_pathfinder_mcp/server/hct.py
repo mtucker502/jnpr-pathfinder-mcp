@@ -1,9 +1,10 @@
 import logging
 from typing import Any, Optional
 
-import requests
 from fastmcp import FastMCP  # type: ignore
 from pydantic import BaseModel
+
+from jnpr_pathfinder_mcp.helpers import post_json
 
 log = logging.getLogger(__name__)
 log.setLevel(logging.DEBUG)
@@ -38,19 +39,24 @@ Juniper groups things in the following way:
 
 mcp = FastMCP(name="Juniper Hardware Compatibility Tool", instructions=INSTRUCTIONS)
 
+BASE_URL = "https://apps.juniper.net/hardwaresrv/hct"
+
 URLS = {
-    "categories": "https://apps.juniper.net/hct/allCategories",
-    "category_components": "https://apps.juniper.net/hct/model/{category_key}",
-    "component_details": "https://apps.juniper.net/hct/details?component={component_name}",
-    "component_supported_platforms": "https://apps.juniper.net/hct/supportedPlatforms/{component_name}",
-    "component_supported_models": "https://apps.juniper.net/hct/supportedModels/{component_name}",
-    "platforms_grouped_by_family": "https://apps.juniper.net/hct/allPlatformsGroupByFamily",
-    "platform_components": "https://apps.juniper.net/hct/modelsForProduct/{platform}",
-    "platform_hardware_specification_detail": "https://apps.juniper.net/hardwaresrv/hct/specification-detail",
-    "platform_information": "https://apps.juniper.net/hct/productInfo/{platform}",
+    "categories": f"{BASE_URL}/categories",
+    "category_models": f"{BASE_URL}/category-models",
+    "component_details": f"{BASE_URL}/component-details",
+    "platforms_grouped_by_family": f"{BASE_URL}/platforms-grouped-by-family",
+    "product_detail": f"{BASE_URL}/product-detail",
+    "specification_detail": f"{BASE_URL}/specification-detail",
+    "search": f"{BASE_URL}/search",
 }
 
-VERIFY_SSL = False
+VERIFY_SSL = True
+TIMEOUT = 60
+
+EMPTY_RESPONSE_ERROR = (
+    "Empty response from API. Check that component names and category ids are correct."
+)
 
 
 class HctResponse(BaseModel):
@@ -59,130 +65,113 @@ class HctResponse(BaseModel):
     response: Optional[dict[str, Any] | list[dict[str, Any]]] = None
 
 
+def _post(url: str, payload: Optional[dict[str, Any]] = None) -> tuple[Any, Optional[str]]:
+    return post_json(
+        url, payload, empty_error=EMPTY_RESPONSE_ERROR, verify=VERIFY_SSL, timeout=TIMEOUT
+    )
+
+
+def _respond(data: Any, error: Optional[str]) -> HctResponse:
+    if error is not None:
+        return HctResponse(success=False, error=error)
+    return HctResponse(success=True, response=data)
+
+
+def _component(component_name: str) -> tuple[Any, Optional[str]]:
+    data, error = _post(URLS["component_details"], {"modelNumber": component_name})
+    # Unknown components return success with an empty "component" object.
+    if error is None and not data.get("component"):
+        return None, EMPTY_RESPONSE_ERROR
+    return data, error
+
+
+def _component_section(component_name: str, section: str) -> HctResponse:
+    data, error = _component(component_name)
+    if error is None:
+        data = {"component": data.get("component"), section: data.get(section) or []}
+    return _respond(data, error)
+
+
+def _product_detail(platform: str) -> tuple[Any, Optional[str]]:
+    data, error = _post(URLS["product_detail"], {"platform": platform})
+    # Unknown platforms return success with all fields null.
+    if error is None and not data.get("platform"):
+        return None, EMPTY_RESPONSE_ERROR
+    return data, error
+
+
 @mcp.tool
 def categories() -> HctResponse:
     """Get the list of all component categories."""
-    response = requests.get(URLS["categories"], verify=VERIFY_SSL)
-    if response.ok and len(response.content):
-        return HctResponse(success=True, response=response.json())
-    return HctResponse(
-        success=False,
-        error=response.text
-        or "Empty response from API. Check that component names and category ids are correct.",
-    )
+    return _respond(*_post(URLS["categories"]))
 
 
 @mcp.tool
 def category_components(category_key: int) -> HctResponse:
     """Get the list of all components in a category."""
-    url = URLS["category_components"].format(category_key=category_key)
-    response = requests.get(url, verify=VERIFY_SSL)
-    if response.ok and len(response.content):
-        return HctResponse(success=True, response=response.json())
-    return HctResponse(
-        success=False,
-        error=response.text
-        or "Empty response from API. Check that component names and category ids are correct.",
-    )
+    return _respond(*_post(URLS["category_models"], {"catKey": category_key}))
 
 
 @mcp.tool
 def component_details(component_name: str) -> HctResponse:
     """Get the details of a specific component."""
-    url = URLS["component_details"].format(component_name=component_name)
-    response = requests.get(url, verify=VERIFY_SSL)
-    if response.ok and len(response.content):
-        return HctResponse(success=True, response=response.json())
-    return HctResponse(
-        success=False,
-        error=response.text
-        or "Empty response from API. Check that component names and category ids are correct.",
-    )
+    return _respond(*_component(component_name))
 
 
 @mcp.tool
 def component_supported_platforms(component_name: str) -> HctResponse:
     """Get list of platforms on which a component is supported."""
-    url = URLS["component_supported_platforms"].format(component_name=component_name)
-    response = requests.get(url, verify=VERIFY_SSL)
-    if response.ok and len(response.content):
-        return HctResponse(success=True, response=response.json())
-    return HctResponse(
-        success=False,
-        error=response.text
-        or "Empty response from API. Check that component names and category ids are correct.",
-    )
+    return _component_section(component_name, "supportedPlatforms")
 
 
 @mcp.tool
 def component_supported_models(component_name: str) -> HctResponse:
-    """Get the list of models that support the component."""
-    url = URLS["component_supported_models"].format(component_name=component_name)
-    response = requests.get(url, verify=VERIFY_SSL)
-    if response.ok and len(response.content):
-        return HctResponse(success=True, response=response.json())
-    return HctResponse(
-        success=False,
-        error=response.text
-        or "Empty response from API. Check that component names and category ids are correct.",
-    )
+    """Get the list of interface models (line cards, MICs, etc.) that support the component."""
+    return _component_section(component_name, "supportedInterfaceModels")
 
 
 @mcp.tool
 def platforms_by_family() -> HctResponse:
     """Get the list of all platforms grouped by family."""
-    url = URLS["platforms_grouped_by_family"].format()
-    response = requests.get(url, verify=VERIFY_SSL)
-    if response.ok and len(response.content):
-        return HctResponse(success=True, response=response.json())
-    return HctResponse(
-        success=False,
-        error=response.text
-        or "Empty response from API. Check that component names and category ids are correct.",
-    )
+    return _respond(*_post(URLS["platforms_grouped_by_family"]))
 
 
 @mcp.tool
 def components_for_platform(platform: str) -> HctResponse:
-    """Get the list of models that support the component."""
-    url = URLS["platform_components"].format(platform=platform)
-    response = requests.get(url, verify=VERIFY_SSL)
-    if response.ok and len(response.content):
-        return HctResponse(success=True, response=response.json())
-    return HctResponse(
-        success=False,
-        error=response.text
-        or "Empty response from API. Check that component names and category ids are correct.",
-    )
+    """Get the components (grouped by category) supported on a platform."""
+    data, error = _product_detail(platform)
+    if error is None:
+        data = {"platform": data.get("platform"), "productModelInfo": data.get("productModelInfo")}
+    return _respond(data, error)
 
 
 @mcp.tool
 def platform_hardware_details(platform: str) -> HctResponse:
-    """Get the list of platforms that support the component."""
-    url = URLS["platform_hardware_specification_detail"]
-    payload = {"productName": platform}
-    response = requests.post(url, json=payload, verify=VERIFY_SSL)
-    if response.ok and len(response.content):
-        return HctResponse(success=True, response=response.json())
-    return HctResponse(
-        success=False,
-        error=response.text
-        or "Empty response from API. Check that component names and category ids are correct.",
-    )
+    """Get the hardware specifications for each variant of a platform."""
+    return _respond(*_post(URLS["specification_detail"], {"productName": platform}))
 
 
 @mcp.tool
 def platform_information(platform: str) -> HctResponse:
-    """Get the list of platforms that support the component."""
-    url = URLS["platform_information"].format(platform=platform)
-    response = requests.get(url, verify=VERIFY_SSL)
-    if response.ok and len(response.content):
-        return HctResponse(success=True, response=response.json())
-    return HctResponse(
-        success=False,
-        error=response.text
-        or "Empty response from API. Check that component names and category ids are correct.",
-    )
+    """Get general information (EOL status, overview, specifications) for a platform."""
+    data, error = _product_detail(platform)
+    if error is None:
+        data = {k: v for k, v in data.items() if k != "productModelInfo"}
+    return _respond(data, error)
+
+
+@mcp.tool
+def search(query: str, page_number: int = 1, page_size: int = 10) -> HctResponse:
+    """Search the HCT for components and platforms by keyword (e.g. "QSFP 100G ZR")."""
+    payload = {
+        "searchQuery": query,
+        "pageNumber": page_number,
+        "pageSize": page_size,
+        "categories": [],
+        "eol": [],
+        "filterDataRequired": False,
+    }
+    return _respond(*_post(URLS["search"], payload))
 
 if __name__ == '__main__':  # pragma: nocover
     from jnpr_pathfinder_mcp.helpers import run_cli

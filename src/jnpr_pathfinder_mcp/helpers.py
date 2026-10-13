@@ -1,4 +1,9 @@
 import argparse
+from typing import Any, Optional
+
+import requests
+
+EMPTY_RESPONSE_ERROR = "Empty response from API."
 
 def parse_args(prog='jnpr_pathfinder_mcp'):
     parser = argparse.ArgumentParser(
@@ -26,3 +31,31 @@ def run_cli(prog, server):
         raise ValueError(f"transport must be 'stdio' or 'http'")
 
     server.run(**kwargs)
+
+
+def post_json(
+    url: str,
+    payload: Optional[dict[str, Any]] = None,
+    empty_error: str = EMPTY_RESPONSE_ERROR,
+    verify: bool = True,
+    timeout: float = 60,
+) -> tuple[Any, Optional[str]]:
+    """POST to a Pathfinder API and unwrap the {"status": ..., "data": ...} envelope.
+
+    The Pathfinder services report most errors with HTTP 200 and status.success=false,
+    so both the HTTP status and the envelope are checked.
+
+    Returns (data, error); exactly one of them is set.
+    """
+    response = requests.post(url, json=payload or {}, verify=verify, timeout=timeout)
+    if not (response.ok and len(response.content)):
+        return None, response.text or empty_error
+    body = response.json()
+    if isinstance(body, dict) and "status" in body:
+        status = body.get("status") or {}
+        if not status.get("success"):
+            return None, status.get("errorMessage") or empty_error
+        body = body.get("data")
+    if not body:
+        return None, empty_error
+    return body, None
